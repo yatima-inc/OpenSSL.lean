@@ -10,4 +10,3 @@ def main (args : List String) : IO UInt32 := do
   catch e =>
     IO.eprintln <| "error: " ++ toString e
     pure 1
-

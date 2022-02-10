@@ -1,5 +1,5 @@
 {
-  description = "Openssl bindings for Lean";
+  description = "OpenSSL bindings for Lean";
 
   inputs = {
     lean = {
@@ -15,8 +15,8 @@
   outputs = { self, lean, utils, nixpkgs }:
     let
       supportedSystems = [
-        # "aarch64-linux"
-        # "aarch64-darwin"
+        "aarch64-linux"
+        "aarch64-darwin"
         "i686-linux"
         "x86_64-darwin"
         "x86_64-linux"
@@ -28,12 +28,14 @@
         leanPkgs = lean.packages.${system};
         pkgs = nixpkgs.legacyPackages.${system};
         inherit (lib.${system}) buildCLib concatStringsSep;
-        includes = [ "${pkgs.openssl.dev}/include" "${leanPkgs.lean-bin-tools-unwrapped}/include" ];
+        includes = 
+          [ "${pkgs.openssl.dev}/include" "${leanPkgs.lean-bin-tools-unwrapped}/include" ./bindings ];
         INCLUDE_PATH = concatStringsSep ":" includes;
         libssl = (pkgs.openssl.out // {
           name = "lib/libssl.so";
           linkName = "ssl";
           libName = "libssl.so";
+          __toString = d: "${d.out}/lib";
         });
         c-shim = buildCLib {
           updateCCOptions = d: d ++ (map (i: "-I${i}") includes);
@@ -46,41 +48,61 @@
             linkName = "lean-openssl-bindings";
           };
         };
+        c-shim-debug = c-shim.override {
+          debug = true;
+          updateCCOptions = d: d ++ (map (i: "-I${i}") includes) ++ [ "-O0" ];
+        };
         name = "OpenSSL";  # must match the name of the top-level .lean file
-        project = leanPkgs.buildLeanPackage
+        OpenSSL = leanPkgs.buildLeanPackage
           {
             inherit name;
-            # deps = [ lean-ipld.project.${system} ];
             # Where the lean files are located
-            nativeSharedLibs = [ (libssl // { __toString = d: "${libssl}/lib"; }) c-shim ];
+            nativeSharedLibs = [ libssl c-shim ];
             src = ./src;
           };
+        Cli = leanPkgs.buildLeanPackage
+          {
+            name = "OpenSSL.Cli";
+            deps = [ OpenSSL ];
+            src = ./src;
+          };
+        project-debug = OpenSSL.override {
+          debug = true;
+          nativeSharedLibs = [ libssl c-shim-debug ];
+        };
         test = leanPkgs.buildLeanPackage
           {
             name = "Tests";
-            deps = [ project ];
+            deps = [ OpenSSL ];
             # Where the lean files are located
             src = ./test;
           };
-        joinDepsDerivationns = getSubDrv:
-          pkgs.lib.concatStringsSep ":" (map (d: "${getSubDrv d}") ([ project ] ++ project.allExternalDeps));
+        test-debug = test.override {
+          debug = true;
+          deps = [ project-debug ];
+        };
+        joinDepsDerivations = getSubDrv:
+          pkgs.lib.concatStringsSep ":" (map (d: "${getSubDrv d}") (OpenSSL.allExternalDeps));
       in
       {
-        inherit project test;
+        project = OpenSSL;
         packages = {
-          ${name} = project.executable;
+          inherit OpenSSL Cli;
+          inherit (OpenSSL) lean-package;
+          test = test.executable;
+          test-debug = test-debug.executable;
         };
 
         checks.test = test.executable;
 
-        defaultPackage = self.packages.${system}.${name};
+        defaultPackage = self.packages.${system}.Cli.executable;
         devShell = pkgs.mkShell {
-          inputsFrom = [ project.executable ];
+          inputsFrom = [ OpenSSL.executable ];
           buildInputs = with pkgs; [
-            leanPkgs.lean
+            leanPkgs.lean-dev
           ];
-          LEAN_PATH = joinDepsDerivationns (d: d.modRoot);
-          LEAN_SRC_PATH = joinDepsDerivationns (d: d.src);
+          LEAN_PATH = "./src:./test:" + joinDepsDerivations (d: d.modRoot);
+          LEAN_SRC_PATH = "./src:./test:" + joinDepsDerivations (d: d.src);
           C_INCLUDE_PATH = INCLUDE_PATH;
           CPLUS_INCLUDE_PATH = INCLUDE_PATH;
         };
